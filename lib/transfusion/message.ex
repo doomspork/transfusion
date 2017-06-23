@@ -1,4 +1,7 @@
 defmodule Transfusion.Message do
+  @moduledoc """
+  """
+
   defmacro __using__(opts) do
     router = Keyword.fetch!(opts, :router)
 
