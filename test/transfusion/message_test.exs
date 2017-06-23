@@ -2,7 +2,6 @@ defmodule Transfusion.MessageTest do
   use ExUnit.Case
 
   defmodule TestConsumer do
-    def test(%{field: value, pid: pid}), do: send(pid, {:msg, value})
     def test(%{pid: pid} = msg), do: send(pid, {:msg, msg})
   end
 
@@ -19,6 +18,11 @@ defmodule Transfusion.MessageTest do
 
     def generate_message_type(%{field: value}), do: value
     def topic, do: "events"
+
+    values do
+      attribute :field, String
+      attribute :pid, Pid
+    end
   end
 
   test "setup with functions" do
@@ -28,7 +32,13 @@ defmodule Transfusion.MessageTest do
 
   test "publishes message" do
     assert {:ok, _} = TestMessage.publish(%{field: "test", pid: self()})
-    assert_receive {:msg, "test"}, 10 # Short delay for async tasks to work
+    assert_receive {:msg, %{field: "test"}}, 10 # Short delay for async tasks to work
+  end
+
+  test "excludes undocumented fields" do
+    assert {:ok, _} = TestMessage.publish(%{field: "test", pid: self(), unknown: "unknown"})
+    assert_receive {:msg, msg}, 10 # Short delay for async tasks to work
+    refute Map.has_key?(msg, :unknown)
   end
 
   defmodule DslMessage do

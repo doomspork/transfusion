@@ -11,18 +11,20 @@ defmodule Transfusion.Message do
       import Transfusion.Message
 
       Module.register_attribute(__MODULE__, :fields, accumulate: true, persist: false)
-
-      def publish(msg) do
-        case validate(msg) do
-          {:ok, _} -> unquote(router).publish(topic(), generate_message_type(msg), msg)
-          {:error, _} = err -> err
-        end
-      end
+      Module.register_attribute(__MODULE__, :router, accumulate: false, persist: false)
+      Module.put_attribute(__MODULE__, :router, unquote(router))
     end
   end
 
   defmacro __before_compile__(_) do
     quote do
+      def publish(msg) do
+        case validate(msg) do
+          {:ok, message} -> @router.publish(topic(), generate_message_type(msg), message)
+          {:error, _} = err -> err
+        end
+      end
+
       def validate(msg) do
         errors =
           @fields
@@ -32,7 +34,7 @@ defmodule Transfusion.Message do
         if length(errors) > 0 do
           {:error, errors}
         else
-          {:ok, msg}
+          normalize(msg)
         end
       end
 
@@ -41,6 +43,29 @@ defmodule Transfusion.Message do
       def check_type(_, value), do: {:ok, value}
 
       defoverridable [check_type: 2]
+
+      def normalize(msg) do
+        {message, _} =
+          msg
+          |> Enum.map(&to_atom/1)
+          |> Enum.into(%{})
+          |> Map.split(@fields)
+
+        {:ok, message}
+      end
+
+      defoverridable [normalize: 1]
+
+      defp to_atom({key, value}) when is_atom(key), do: {key, value}
+      defp to_atom({key, value}) when is_binary(key), do: {String.to_atom(value), value}
+      defp to_atom({key, value}) do
+        key =
+          key
+          |> to_string
+          |> to_atom
+
+        {key, value}
+      end
     end
   end
 
@@ -95,8 +120,6 @@ defmodule Transfusion.Message do
   end
 
   defp type_field(_field, :Any) do
-    quote do
-    end
   end
 
   defp type_field(field, :String), do: type_check("binary", field)
