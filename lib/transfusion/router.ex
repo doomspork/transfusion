@@ -31,8 +31,10 @@ defmodule Transfusion.Router do
     message_match = message_type_match(message_type)
     quote do
       defp route(unquote(topic), unquote(message_match), msg) do
-        Logger.debug("Routing (#{unquote(topic)}/#{unquote(message_type)}): #{msg}")
+        Logger.debug("Routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}")
         Task.async(unquote(consumer), unquote(handler), [msg])
+
+        {:ok, msg}
       end
     end
   end
