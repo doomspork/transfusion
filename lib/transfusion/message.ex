@@ -91,23 +91,26 @@ defmodule Transfusion.Message do
     end
   end
 
-  defp type_field(field, :Any) do
+  defp type_field(_field, :Any) do
     quote do
     end
   end
 
-  defp type_field(field, :Map) do
-    quote do
-      def check_type(unquote(field), value) when not is_map(value) do
-        {:error, ":#{unquote(field)} (map) invalid value: #{inspect(value)}"}
-      end
-    end
+  defp type_field(field, :String), do: type_check("binary", field)
+
+  defp type_field(field, type) do
+    type
+    |> to_string
+    |> String.downcase
+    |> type_check(field)
   end
 
-  defp type_field(field, :String) do
+  defp type_check(type, field) do
+    guard = String.to_atom("is_#{type}")
+
     quote do
-      def check_type(unquote(field), value) when not is_binary(value) do
-        {:error, ":#{unquote(field)} (binary) invalid value: #{inspect(value)}"}
+      def check_type(unquote(field), value) when not unquote(guard)(value) do
+        {:error, ":#{unquote(field)} (#{unquote(type)}) invalid value: #{inspect(value)}"}
       end
     end
   end

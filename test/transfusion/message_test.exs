@@ -51,20 +51,25 @@ defmodule Transfusion.MessageTest do
 
     values do
       attribute :always, Map, required: true
-      attribute :sometimes, Map
+      attribute :float, Float
+      attribute :integer, Integer
+      attribute :number, Number
+      attribute :pid, Pid
       attribute :string, String
-      attribute :pid, Any
     end
   end
 
   test "validate message fields" do
-    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, sometimes: %{}})
-    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, sometimes: nil})
     assert {:ok, _} = ValidatedMessage.validate(%{always: %{}})
+    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, string: nil})
     assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, string: "I am a string"})
 
+    assert {:error, [_, _]} = ValidatedMessage.validate(%{string: 42})
     assert {:error, [":string (binary) invalid value: 42"]} = ValidatedMessage.validate(%{always: %{}, string: 42})
-    assert {:error, [_, ":always is required"]} = ValidatedMessage.validate(%{string: 42})
+    assert {:error, [":integer (integer)" <> _]} = ValidatedMessage.validate(%{always: %{}, integer: "binary"})
+    assert {:error, [":number (number)" <> _]} = ValidatedMessage.validate(%{always: %{}, number: "binary"})
+    assert {:error, [":float (float)" <> _]} = ValidatedMessage.validate(%{always: %{}, float: "binary"})
+    assert {:error, [":pid (pid)" <> _]} = ValidatedMessage.validate(%{always: %{}, pid: "binary"})
   end
 
   test "validate and publish" do
