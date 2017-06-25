@@ -12,9 +12,10 @@ defmodule Transfusion.Router do
         IO.warn("[#{__MODULE__}] deprecated use publish/3", Macro.Env.stacktrace(__ENV__))
         publish(topic, type, msg)
       end
-      def publish(topic, type, msg) do
-        type = String.split(type, ".")
-
+      def publish(topic, type, msg) when is_binary(type) do
+        publish(topic, String.split(type, "."), msg)
+      end
+      def publish(topic, type, msg) when is_list(type) do
         if ignore?(topic, type) do
           Logger.debug(fn -> "[#{__MODULE__}] ignored (#{topic}/#{Enum.join(type, ".")}): #{inspect(msg)}" end)
         else
@@ -75,7 +76,9 @@ defmodule Transfusion.Router do
 
     quote do
       defp broadcast(unquote(topic_match) = topic, message_type, msg) do
-        Enum.map(unquote(routers), &(&1.publish(topic, message_type, msg)))
+        Enum.map(unquote(routers), fn (router) ->
+          Task.Supervisor.start_child(Transfusion.TaskSupervisor, router, :publish, [topic, message_type, msg])
+        end)
       end
     end
   end
@@ -103,7 +106,7 @@ defmodule Transfusion.Router do
     quote do
       defp route(unquote(topic), unquote(message_match), msg) do
         Logger.debug(fn -> "[#{__MODULE__}] routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}" end)
-        Task.async(unquote(consumer), unquote(handler), [msg])
+        Task.Supervisor.start_child(Transfusion.TaskSupervisor, unquote(consumer), unquote(handler), [msg])
 
         {:ok, msg}
       end
