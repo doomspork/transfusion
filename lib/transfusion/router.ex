@@ -1,4 +1,7 @@
 defmodule Transfusion.Router do
+  @moduledoc """
+  """
+
   defmacro __using__(_opts) do
     quote do
       import Transfusion.Router
@@ -10,18 +13,42 @@ defmodule Transfusion.Router do
         publish(topic, type, msg)
       end
       def publish(topic, type, msg), do: route(topic, String.split(type, "."), msg)
+
+      @before_compile Transfusion.Router
     end
   end
 
-  defmacro forward(topic, router) do
+  defmacro __before_compile__(_) do
     quote do
-      defp route(unquote(topic), message_type, msg) do
-        unquote(router).publish(unquote(topic), message_type, msg)
+      defp route(topic, message_type, msg) do
+        Logger.info(fn -> "no handler (#{topic}/#{Enum.join(message_type, ".")}): #{inspect(msg)}" end)
       end
     end
   end
 
+  defmacro forward(topic, [to: router]) do
+    quote do
+      defp route(unquote(topic), message_type, msg) do
+        unquote(router).publish(unquote(topic), Enum.join(message_type, "."), msg)
+      end
+    end
+  end
+
+  defmacro ignore(topic, message_types) when is_list(message_types) do
+    for message_type <- message_types, do: ignore_route(topic, message_type)
+  end
+
   defmacro topic(topic, consumer, [do: block]), do: message_mapping(topic, consumer, block)
+
+  defp ignore_route(topic, message_type) do
+    quote do
+      defp route(unquote(topic), unquote(message_type), msg) do
+        Logger.debug(fn -> "ignored (#{unquote(topic)}/#{unquote(Enum.join(message_type, "."))}): #{inspect(msg)}" end)
+
+        {:ok, msg}
+      end
+    end
+  end
 
   defp message_mapping(topic, consumer, {:__block__, _, mappings}),
     do: Enum.map(mappings, &message_mapping(topic, consumer, &1))
@@ -31,7 +58,7 @@ defmodule Transfusion.Router do
     message_match = message_type_match(message_type)
     quote do
       defp route(unquote(topic), unquote(message_match), msg) do
-        Logger.debug(fn -> "Routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}" end)
+        Logger.debug(fn -> "routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}" end)
         Task.async(unquote(consumer), unquote(handler), [msg])
 
         {:ok, msg}
