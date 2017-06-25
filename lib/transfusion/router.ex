@@ -9,21 +9,38 @@ defmodule Transfusion.Router do
       require Logger
 
       def publish(topic, %{message_type: type} = msg) do # hold over from Exque
-        IO.warn("deprecated use publish/3", Macro.Env.stacktrace(__ENV__))
+        IO.warn("[#{__MODULE__}] deprecated use publish/3", Macro.Env.stacktrace(__ENV__))
         publish(topic, type, msg)
       end
-      def publish(topic, type, msg), do: route(topic, String.split(type, "."), msg)
+      def publish(topic, type, msg) do
+        type = String.split(type, ".")
+
+        if ignore?(topic, type) do
+          Logger.debug(fn -> "[#{__MODULE__}] ignored (#{topic}/#{Enum.join(type, ".")}): #{inspect(msg)}" end)
+        else
+          broadcast(topic, type, msg)
+          route(topic, type, msg)
+        end
+      end
 
       @before_compile Transfusion.Router
     end
   end
 
-  defmacro __before_compile__(_) do
+  defmacro __before_compile__(%{module: module}) do
     quote do
+      unquote(broadcast_catchall(module))
+
+      defp ignore?(_, _), do: false
+
       defp route(topic, message_type, msg) do
-        Logger.info(fn -> "no handler (#{topic}/#{Enum.join(message_type, ".")}): #{inspect(msg)}" end)
+        Logger.debug(fn -> "[#{__MODULE__}] no handler (#{topic}/#{Enum.join(message_type, ".")}): #{inspect(msg)}" end)
       end
     end
+  end
+
+  defmacro broadcast(topic, opts) do
+    broadcast_function(topic, opts)
   end
 
   defmacro forward(topic, [to: router]) do
@@ -35,17 +52,44 @@ defmodule Transfusion.Router do
   end
 
   defmacro ignore(topic, message_types) when is_list(message_types) do
-    for message_type <- message_types, do: ignore_route(topic, message_type)
+    for message_type <- message_types, do: ignore_function(topic, message_type)
   end
 
   defmacro topic(topic, consumer, [do: block]), do: message_mapping(topic, consumer, block)
 
-  defp ignore_route(topic, message_type) do
-    quote do
-      defp route(unquote(topic), unquote(message_type), msg) do
-        Logger.debug(fn -> "ignored (#{unquote(topic)}/#{unquote(Enum.join(message_type, "."))}): #{inspect(msg)}" end)
+  defp broadcast_catchall(module) do
+    unless Module.defines?(module, {:broadcast, 3}) do
+      quote do
+        defp broadcast(_, _, _), do: :ok # Do nothing
+      end
+    end
+  end
 
-        {:ok, msg}
+  defp broadcast_function(topic, [to: routers]) when is_list(routers) do
+    topic_match =
+      if topic == "*" do
+        {:_, [], Elixir} # AST for `_`
+      else
+        topic
+      end
+
+    quote do
+      defp broadcast(unquote(topic_match) = topic, message_type, msg) do
+        Enum.map(unquote(routers), &(&1.publish(topic, message_type, msg)))
+      end
+    end
+  end
+
+  defp broadcast_function(topic, [to: router]) do
+    broadcast_function(topic, [to: [router]])
+  end
+
+  defp ignore_function(topic, message_type) do
+    message_match = message_type_match(message_type)
+
+    quote do
+      defp ignore?(unquote(topic), unquote(message_match), msg) do
+        true
       end
     end
   end
@@ -58,7 +102,7 @@ defmodule Transfusion.Router do
     message_match = message_type_match(message_type)
     quote do
       defp route(unquote(topic), unquote(message_match), msg) do
-        Logger.debug(fn -> "routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}" end)
+        Logger.debug(fn -> "[#{__MODULE__}] routing (#{unquote(topic)}/#{unquote(message_type)}): #{inspect(msg)}" end)
         Task.async(unquote(consumer), unquote(handler), [msg])
 
         {:ok, msg}
