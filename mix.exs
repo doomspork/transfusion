@@ -16,6 +16,6 @@ defmodule Transfusion.Mixfile do
   end
 
   defp deps do
-    [{:credo, ">= 0.0.0", only: [:dev, :test]}]
+    [{:credo, ">= 0.0.0", only: [:dev, :test], runtime: false}]
   end
 end

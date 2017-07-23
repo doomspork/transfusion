@@ -31,14 +31,22 @@ defmodule Transfusion.MessageTest do
   end
 
   test "publishes message" do
-    assert {:ok, _} = TestMessage.publish(%{field: "test", pid: self()})
-    assert_receive {:msg, %{field: "test"}}, 10 # Short delay for async tasks to work
+    TestRouter.start_link()
+
+    assert TestMessage.publish(%{field: "test", pid: self()})
+    assert_receive {:msg, %{field: "test"}}, 50 # Short delay for async tasks to work
+
+    GenServer.stop(TestRouter, :normal)
   end
 
   test "excludes undocumented fields" do
-    assert {:ok, _} = TestMessage.publish(%{field: "test", pid: self(), unknown: "unknown"})
-    assert_receive {:msg, msg}, 10 # Short delay for async tasks to work
+    TestRouter.start_link()
+
+    assert TestMessage.publish(%{field: "test", pid: self(), unknown: "unknown"})
+    assert_receive {:msg, msg}, 50 # Short delay for async tasks to work
     refute Map.has_key?(msg, :unknown)
+
+    GenServer.stop(TestRouter, :normal)
   end
 
   defmodule DslMessage do
@@ -70,9 +78,9 @@ defmodule Transfusion.MessageTest do
   end
 
   test "validate message fields" do
-    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}})
-    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, string: nil})
-    assert {:ok, _} = ValidatedMessage.validate(%{always: %{}, string: "I am a string"})
+    assert ValidatedMessage.validate(%{always: %{}})
+    assert ValidatedMessage.validate(%{always: %{}, string: nil})
+    assert ValidatedMessage.validate(%{always: %{}, string: "I am a string"})
 
     assert {:error, [_, _]} = ValidatedMessage.validate(%{string: 42})
     assert {:error, [":string (binary) invalid value: 42"]} = ValidatedMessage.validate(%{always: %{}, string: 42})
@@ -83,9 +91,13 @@ defmodule Transfusion.MessageTest do
   end
 
   test "validate and publish" do
-    assert {:ok, _} = ValidatedMessage.publish(%{always: %{one: 1}, pid: self(), string: "success"})
-    assert_receive {:msg, %{always: %{one: 1}, pid: _, string: "success"}}, 10 # Short delay for async tasks to work
+    TestRouter.start_link()
+
+    assert ValidatedMessage.publish(%{always: %{one: 1}, pid: self(), string: "success"})
+    assert_receive {:msg, %{always: %{one: 1}, pid: _, string: "success"}}, 50 # Short delay for async tasks to work
 
     assert {:error, [":always is required"]} = ValidatedMessage.publish(%{})
+
+    GenServer.stop(TestRouter, :normal)
   end
 end

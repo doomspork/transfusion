@@ -1,19 +1,13 @@
 # Transfusion
 
-**TODO: Add description**
+An experimental event-based work flow — you probably don't want to use it just yet.
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `transfusion` to your list of dependencies in `mix.exs`:
+The package is currently not on hex, to use it you'll need to use master directly:
 
 ```elixir
 def deps do
-  [{:transfusion, "~> 0.1.0"}]
+  [{:transfusion, github: "doomspork/transfusion"}]
 end
 ```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at [https://hexdocs.pm/transfusion](https://hexdocs.pm/transfusion).
-
