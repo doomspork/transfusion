@@ -21,7 +21,7 @@ defmodule Transfusion.RouterTest do
     end
 
     on_error fn
-      ({:error, :max_retries}, msg) -> send(msg.pid, :max_retries)
+      (:max_retries, msg) -> send(msg.pid, :max_retries)
       (_, msg) -> send(msg.pid, :error)
     end
   end

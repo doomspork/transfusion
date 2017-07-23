@@ -22,16 +22,12 @@ defmodule Transfusion.Router do
       end
 
       def handle_cast({:publish, topic, type, msg}, queue) do
-        if ignore?(topic, type) do
-          {:noreply, queue}
-        else
-          msg = attach_meta(topic, type, msg)
+        msg = attach_meta(topic, type, msg)
 
-          broadcast(topic, type, msg)
-          route(topic, type, msg)
+        broadcast(topic, type, msg)
+        route(topic, type, msg)
 
-          {:noreply, List.insert_at(queue, -1, msg)}
-        end
+        {:noreply, List.insert_at(queue, -1, msg)}
       end
 
       def handle_cast({:ack, id, resp}, queue) do
@@ -41,7 +37,7 @@ defmodule Transfusion.Router do
 
       def handle_cast({:error, reason, %{_meta: %{id: id}} = msg}, queue) do
         Logger.debug(fn -> "Message (id: #{id}) ERROR: #{inspect(reason)}" end)
-        on_error({:error, reason}, msg)
+        on_error(reason, msg)
         {:noreply, remove_msg(queue, id)}
       end
 
@@ -120,8 +116,6 @@ defmodule Transfusion.Router do
       unquote(broadcast_catchall(module))
       unquote(error_handler(module))
 
-      defp ignore?(_, _), do: false
-
       defp route(_topic, _message_type, %{_meta: %{id: id}}),
         do: GenServer.cast(__MODULE__, {:ack, id})
     end
@@ -155,10 +149,6 @@ defmodule Transfusion.Router do
         unquote(router).publish(unquote(topic), Enum.join(message_type, "."), msg)
       end
     end
-  end
-
-  defmacro ignore(topic, message_types) when is_list(message_types) do
-    for message_type <- message_types, do: ignore_function(topic, message_type)
   end
 
   defmacro topic(topic, consumer, [do: block]), do: message_mapping(topic, consumer, block)
@@ -196,16 +186,6 @@ defmodule Transfusion.Router do
     unless Module.defines?(module, {:on_error, 2}) do
       quote do
         defp on_error(_, _), do: :ok # Do nothing
-      end
-    end
-  end
-
-  defp ignore_function(topic, message_type) do
-    message_match = message_type_match(message_type)
-
-    quote do
-      defp ignore?(unquote(topic), unquote(message_match), msg) do
-        true
       end
     end
   end
