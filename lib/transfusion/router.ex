@@ -4,7 +4,7 @@ defmodule Transfusion.Router do
 
   defmacro __using__(opts \\ []) do
     max_retries = Keyword.get(opts, :max_retries, 5)
-    retry_after = Keyword.get(opts, :retry_after, 1000)
+    retry_after = Keyword.get(opts, :retry_after, 300) # Seconds, 300 = 5 minutes
 
     quote do
       use GenServer
@@ -21,17 +21,8 @@ defmodule Transfusion.Router do
         {:ok, state}
       end
 
-      def handle_cast({:publish, topic, type, msg}, queue) do
-        msg = attach_meta(topic, type, msg)
-
-        broadcast(topic, type, msg)
-        route(topic, type, msg)
-
-        {:noreply, List.insert_at(queue, -1, msg)}
-      end
-
       def handle_cast({:ack, id, resp}, queue) do
-        Logger.debug(fn -> "Message (id: #{id}) SUCCESS: #{resp}" end)
+        Logger.debug(fn -> "Message (id: #{id}) SUCCESS: #{inspect(resp)}" end)
         {:noreply, remove_msg(queue, id)}
       end
 
@@ -39,6 +30,15 @@ defmodule Transfusion.Router do
         Logger.debug(fn -> "Message (id: #{id}) ERROR: #{inspect(reason)}" end)
         on_error(reason, msg)
         {:noreply, remove_msg(queue, id)}
+      end
+
+      def handle_cast({:publish, topic, type, msg}, queue) do
+        msg = attach_meta(topic, type, msg)
+
+        broadcast(topic, type, msg)
+        route(topic, type, msg)
+
+        {:noreply, List.insert_at(queue, -1, msg)}
       end
 
       def handle_info(:sweep, queue) do
@@ -80,7 +80,7 @@ defmodule Transfusion.Router do
         do: %{attempts: 0, id: gen_id(), published_at: now(), router: self(), topic: topic, type: type}
 
       defp expired?(now, %{_meta: %{attempts: attempts, published_at: published_at}}),
-        do: (published_at + (attempts * unquote(retry_after))) > now
+        do: (published_at + (attempts * unquote(retry_after))) < now
 
       defp gen_id do
         64
@@ -92,8 +92,8 @@ defmodule Transfusion.Router do
 
       defp now, do: System.system_time(:second)
 
-      defp remove_msg(queue, id) do
-        index = Enum.find_index(queue, &(Map.get(&1, :_id) == id))
+      defp remove_msg(queue, msg_id) do
+        index = Enum.find_index(queue, fn (%{_meta: %{id: id}}) -> id == msg_id end)
         case index do
           nil   -> queue
           index -> List.delete_at(queue, index)
@@ -116,8 +116,9 @@ defmodule Transfusion.Router do
       unquote(broadcast_catchall(module))
       unquote(error_handler(module))
 
-      defp route(_topic, _message_type, %{_meta: %{id: id}}),
-        do: GenServer.cast(__MODULE__, {:ack, id})
+      defp route(topic, message_type, %{_meta: %{id: id}}), do: {:ok, id}
+
+      defoverridable [route: 3]
     end
   end
 
@@ -172,7 +173,7 @@ defmodule Transfusion.Router do
     quote do
       defp broadcast(unquote(topic_match) = topic, message_type, msg) do
         Enum.map(unquote(routers), fn (router) ->
-          Task.Supervisor.async(Transfusion.TaskSupervisor, router, :publish, [topic, message_type, msg])
+          Task.Supervisor.start_child(Transfusion.TaskSupervisor, router, :publish, [topic, message_type, msg])
         end)
       end
     end
