@@ -65,7 +65,9 @@ defmodule Transfusion.Router do
           |> apply(handler, [msg])
           |> route_result(msg)
         rescue
-          _ -> republish(msg)
+          e ->
+            Logger.error(e)
+            republish(msg)
         end
       end
 
