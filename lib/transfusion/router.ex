@@ -21,13 +21,13 @@ defmodule Transfusion.Router do
         {:ok, state}
       end
 
-      def handle_cast({:ack, id, resp}, queue) do
-        Logger.debug(fn -> "Message (id: #{id}) SUCCESS: #{inspect(resp)}" end)
+      def handle_cast({:ack, %{_meta: %{id: id}} = msg, resp}, queue) do
+        Logger.debug(fn -> "Message (#{pretty_msg(msg)}) SUCCESS: #{inspect(resp)}" end)
         {:noreply, remove_msg(queue, id)}
       end
 
-      def handle_cast({:error, reason, %{_meta: %{id: id}} = msg}, queue) do
-        Logger.debug(fn -> "Message (id: #{id}) ERROR: #{inspect(reason)}" end)
+      def handle_cast({:error, %{_meta: %{id: id}} = msg, reason}, queue) do
+        Logger.error(fn -> "Message (#{pretty_msg(msg)}) ERROR: #{inspect(reason)}" end)
         on_error(reason, msg)
         {:noreply, remove_msg(queue, id)}
       end
@@ -53,7 +53,7 @@ defmodule Transfusion.Router do
 
       def republish(%{_meta: %{attempts: attempts} = meta} = msg) do
         if attempts >= unquote(max_retries) do
-          GenServer.cast(__MODULE__, {:error, :max_retries, msg})
+          GenServer.cast(__MODULE__, {:error, msg, :max_retries})
         else
           GenServer.cast(__MODULE__, {:publish, meta.topic, meta.type, msg})
         end
@@ -92,6 +92,8 @@ defmodule Transfusion.Router do
 
       defp now, do: System.system_time(:second)
 
+      defp pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
+
       defp remove_msg(queue, msg_id) do
         index = Enum.find_index(queue, fn (%{_meta: %{id: id}}) -> id == msg_id end)
         case index do
@@ -101,9 +103,9 @@ defmodule Transfusion.Router do
       end
 
       defp route_result(:error, msg), do: route_result({:error, "no error returned"}, msg)
-      defp route_result({:error, reason}, msg), do: GenServer.cast(__MODULE__, {:error, reason, msg})
+      defp route_result({:error, reason}, msg), do: GenServer.cast(__MODULE__, {:error, msg, reason})
       defp route_result(:ok, msg), do: route_result({:ok, "no result returned"}, msg)
-      defp route_result({:ok, resp}, %{_meta: %{id: id}}), do: GenServer.cast(__MODULE__, {:ack, id, resp})
+      defp route_result({:ok, resp}, msg), do: GenServer.cast(__MODULE__, {:ack, msg, resp})
       defp route_result(nil, msg), do: route_result(:ok, msg)
       defp route_result(result, msg), do: route_result({:ok, result}, msg)
 

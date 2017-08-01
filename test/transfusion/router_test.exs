@@ -1,6 +1,8 @@
 defmodule Transfusion.RouterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   defmodule TestConsumer do
     def error(_msg), do: :error
     def prefix(%{msg: msg, pid: pid}), do: send(pid, {:msg, msg})
@@ -56,9 +58,15 @@ defmodule Transfusion.RouterTest do
   test "triggers on_error/2 for max retries" do
     TestRouter.start_link()
 
-    TestRouter.publish("events", "test", %{pid: self(), _meta: %{id: "abc123", attempts: 3}})
+    meta = %{id: "abc123", attempts: 3, topic: "events", type: ["test"]}
+
+    log_output = capture_log(fn ->
+      TestRouter.publish("events", "test", %{pid: self(), _meta: meta})
+      Process.sleep(100)
+    end)
 
     assert_receive :max_retries, 50
+    assert log_output =~ ~r/ERROR: :max_retries/
 
     GenServer.stop(TestRouter, :normal)
   end
@@ -66,9 +74,13 @@ defmodule Transfusion.RouterTest do
   test "consumer errors trigger on_error/2" do
     TestRouter.start_link()
 
-    TestRouter.publish("events", "error", %{pid: self()})
+    log_output = capture_log(fn ->
+      TestRouter.publish("events", "error", %{pid: self()})
+      Process.sleep(100)
+    end)
 
-    assert_receive :error, 150
+    assert_receive :error, 50
+    assert log_output =~ ~r/ERROR: "no error returned"/
 
     GenServer.stop(TestRouter, :normal)
   end
