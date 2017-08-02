@@ -13,16 +13,16 @@ defmodule Transfusion.Router do
 
       require Logger
 
-      def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+      def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
       def init(state) do
-        Process.send_after(self(), :sweep, 100)
+        Process.send_after(self(), :sweep, 1000)
 
         {:ok, state}
       end
 
       def handle_cast({:ack, %{_meta: %{id: id}} = msg, resp}, queue) do
-        Logger.debug(fn -> "Message (#{pretty_msg(msg)}) SUCCESS: #{inspect(resp)}" end)
+        Logger.info(fn -> "Message (#{pretty_msg(msg)}) SUCCESS: #{inspect(resp)}" end)
         {:noreply, remove_msg(queue, id)}
       end
 
@@ -33,30 +33,47 @@ defmodule Transfusion.Router do
       end
 
       def handle_cast({:publish, topic, type, msg}, queue) do
-        msg = attach_meta(topic, type, msg)
+        %{_meta: %{id: id}} = msg = attach_meta(topic, type, msg)
 
         broadcast(topic, type, msg)
-        route(topic, type, msg)
 
-        {:noreply, List.insert_at(queue, -1, msg)}
+        queue =
+          case route(topic, type, msg) do
+            :noop -> queue
+            _ -> Map.put(queue, id, msg)
+          end
+
+        {:noreply, queue}
       end
 
       def handle_info(:sweep, queue) do
-        {expired, queue} = Enum.split_with(queue, &expired?(now(), &1))
+        expired_ids =
+          queue
+          |> Enum.filter(&expired?(now(), &1))
+          |> Keyword.keys
+
+        {expired, queue} = Map.split(queue, expired_ids)
+
         Enum.each(expired, &republish/1)
-        Process.send_after(self(), :sweep, 100)
+        Process.send_after(self(), :sweep, 1000)
+
         {:noreply, queue}
       end
 
       def publish(topic, type, msg) when is_binary(type), do: publish(topic, String.split(type, "."), msg)
       def publish(topic, type, msg) when is_list(type), do: GenServer.cast(__MODULE__, {:publish, topic, type, msg})
 
-      def republish(%{_meta: %{attempts: attempts} = meta} = msg) do
-        if attempts >= unquote(max_retries) do
-          GenServer.cast(__MODULE__, {:error, msg, :max_retries})
-        else
-          GenServer.cast(__MODULE__, {:publish, meta.topic, meta.type, msg})
-        end
+      def republish(%{_meta: %{attempts: attempts} = meta} = msg, error \\ nil) do
+        unless is_nil(error), do: Logger.error("Republish because: #{inspect(error)}")
+
+        msg =
+          if attempts >= unquote(max_retries) do
+            {:error, msg, :max_retries}
+          else
+            {:publish, meta.topic, meta.type, msg}
+          end
+
+        GenServer.cast(__MODULE__, msg)
       end
 
       def run_route(consumer, handler, msg) do
@@ -65,15 +82,13 @@ defmodule Transfusion.Router do
           |> apply(handler, [msg])
           |> route_result(msg)
         rescue
-          e ->
-            Logger.error(e)
-            republish(msg)
+          e -> republish(msg, e)
         end
       end
 
       defp attach_meta(topic, type, msg) do
         meta = Map.get(msg, :_meta, default_meta(topic, type))
-        meta = %{meta|attempts: meta.attempts + 1}
+        meta = Map.merge(meta, %{attempts: meta.attempts + 1})
 
         Map.put(msg, :_meta, meta)
       end
@@ -81,7 +96,7 @@ defmodule Transfusion.Router do
       defp default_meta(topic, type),
         do: %{attempts: 0, id: gen_id(), published_at: now(), router: self(), topic: topic, type: type}
 
-      defp expired?(now, %{_meta: %{attempts: attempts, published_at: published_at}}),
+      defp expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
         do: (published_at + (attempts * unquote(retry_after))) < now
 
       defp gen_id do
@@ -96,13 +111,7 @@ defmodule Transfusion.Router do
 
       defp pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
 
-      defp remove_msg(queue, msg_id) do
-        index = Enum.find_index(queue, fn (%{_meta: %{id: id}}) -> id == msg_id end)
-        case index do
-          nil   -> queue
-          index -> List.delete_at(queue, index)
-        end
-      end
+      defp remove_msg(queue, msg_id), do: Map.delete(queue, msg_id)
 
       defp route_result(:error, msg), do: route_result({:error, "no error returned"}, msg)
       defp route_result({:error, reason}, msg), do: GenServer.cast(__MODULE__, {:error, msg, reason})
@@ -120,7 +129,7 @@ defmodule Transfusion.Router do
       unquote(broadcast_catchall(module))
       unquote(error_handler(module))
 
-      defp route(topic, message_type, %{_meta: %{id: id}}), do: {:ok, id}
+      defp route(_topic, _message_type, _msg), do: :noop
 
       defoverridable [route: 3]
     end
