@@ -9,7 +9,7 @@ An experimental event-based work flow — you probably don't want to use it just
 
 ## Installation
 
-The package is currently not on hex, to use it point directly to master:
+The package is currently not on hex, instead point to master:
 
 ```elixir
 def deps do
@@ -18,6 +18,8 @@ end
 ```
 
 ## Routing Messages
+
+The router is the core of `Transfusion` handling the message routing and results.  The router also maintains a list of current messages, retrying expired messages with an exponential backoff.
 
 ```elixir
 defmodule Example.Router do
@@ -28,22 +30,30 @@ defmodule Example.Router do
   require Logger
 
   broadcast "*", to: [AnotherExample.Router]
-  
+
   forward "users", to: Users.Router
-  
+
   topic "events", Example.Consumer do
     map "new.message", to: :new
   end
-  
-  on_error :handle_errors
-  
-  def handle_errors(reason, msg) do
-    IO.warn("#{reason} caused an error to occur for #{msg}")
+
+  def handle_error(msg, reason) do
+    # Log or submit your error
+
+    :noretry
   end
 end
 ```
 
+The `broadcast/2` macro enables us to distributes messages to other router throughout our application in addition to processing it ourselves.
+
+We can redirect, or forward, all messages for a given topic to another router using `forward/2`.
+
+Most importantly is the `topic/2` and `map/2` macros, with these we can subscribe a consumer to various messages on a given topic.
+
 ## Message Producing
+
+Messages are primarily syntactic sugar for creating structs with a splash of validation.  You can use `Transfusion` without creating a message module, maps work just fine!
 
 ```elixir
 defmodule Example.Message do
@@ -62,6 +72,8 @@ end
 ```
 
 ## Message Consuming
+
+Consumers do the real work in `Transfusion`.  A consumer received events and is expected to do some work, returning `{:ok, result}` or `{:error, reason}`.
 
 ```elixir
 defmodule Example.Consumer do
