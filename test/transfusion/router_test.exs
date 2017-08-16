@@ -8,6 +8,7 @@ defmodule Transfusion.RouterTest do
     def prefix(%{msg: msg, pid: pid}), do: send(pid, {:msg, msg})
     def test(%{msg: msg, pid: pid}), do: send(pid, {:msg, msg})
     def wildcard(%{msg: msg, pid: pid}), do: send(pid, {:msg, msg})
+    def retries(_msg), do: {:error, :retry}
   end
 
   defmodule TestRouter do
@@ -22,9 +23,36 @@ defmodule Transfusion.RouterTest do
       map "wildcard.*", to: :wildcard
     end
 
-    on_error fn
-      (:max_retries, msg) -> send(msg.pid, :max_retries)
-      (_, msg) -> send(msg.pid, :error)
+    def handle_error(:max_retries, %{pid: pid}) do
+      send(pid, :max_retries)
+      :noretry
+    end
+
+    def handle_error(:retry, _msg), do: :retry
+
+    def handle_error(_error, %{pid: pid}) do
+      send(pid, :error)
+      :noretry
+    end
+  end
+
+  defmodule ExceptionConsumer do
+    defexception ~w(message pid)a
+
+    def test(%{pid: pid}), do: raise ExceptionConsumer, pid: pid
+  end
+
+  defmodule ExceptionRouter do
+    use Transfusion.Router,
+      exception_strategy: :error
+
+    topic "events", ExceptionConsumer do
+      map "test", to: :test
+    end
+
+    def handle_error(%{pid: pid}, _) do
+      send(pid, :exception)
+      :noretry
     end
   end
 
@@ -55,13 +83,13 @@ defmodule Transfusion.RouterTest do
     GenServer.stop(TestRouter, :normal)
   end
 
-  test "triggers on_error/2 for max retries" do
+  test "invokes error handler for max retries" do
     TestRouter.start_link()
 
-    meta = %{id: "abc123", attempts: 3, topic: "events", type: ["test"]}
+    meta = %{id: "abc123", attempts: 2, topic: "events", type: ["test"]}
 
     log_output = capture_log(fn ->
-      TestRouter.publish("events", "test", %{pid: self(), _meta: meta})
+      TestRouter.publish("events", "retry", %{pid: self(), _meta: meta})
       Process.sleep(100)
     end)
 
@@ -71,7 +99,7 @@ defmodule Transfusion.RouterTest do
     GenServer.stop(TestRouter, :normal)
   end
 
-  test "consumer errors trigger on_error/2" do
+  test "consumer errors invoke error handler" do
     TestRouter.start_link()
 
     log_output = capture_log(fn ->
@@ -83,5 +111,19 @@ defmodule Transfusion.RouterTest do
     assert log_output =~ ~r/ERROR: "no error returned"/
 
     GenServer.stop(TestRouter, :normal)
+  end
+
+  test "invokes error handler for exception when strategy is set to `:error`" do
+    ExceptionRouter.start_link()
+
+    log_output = capture_log(fn ->
+      ExceptionRouter.publish("events", "test", %{pid: self()})
+      Process.sleep(100)
+    end)
+
+    assert_receive :exception, 50
+    assert log_output =~ ~r/ERROR: %Transfusion.RouterTest.ExceptionConsumer/
+
+    GenServer.stop(ExceptionRouter, :normal)
   end
 end
