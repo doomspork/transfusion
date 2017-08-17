@@ -26,22 +26,96 @@ defmodule Transfusion.Router do
       end
     end
   """
-
-  @type msg :: %{_meta: %{attempts: integer, id: binary}, data: map}
-
   defmacro __using__(opts \\ []) do
     quote do
       use GenServer
 
-      import Transfusion.Router
-
       require Logger
 
-      defp attach_meta(topic, type, msg) do
-        meta = Map.get(msg, :_meta, default_meta(topic, type))
-        meta = Map.merge(meta, %{attempts: meta.attempts + 1})
+      import Transfusion.Router
 
-        Map.put(msg, :_meta, meta)
+      @type msg :: %{_meta: %{attempts: integer, id: binary}, data: map}
+
+      @doc false
+      def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+
+      @doc false
+      def init(state) do
+        Process.send_after(self(), :sweep, 1000)
+
+        {:ok, state}
+      end
+
+      @doc """
+      Acknowledges a message has been processed and can be removed from the queue.
+      """
+      def handle_cast({:ack, %{_meta: %{id: id}} = msg, resp}, queue) do
+        Logger.info(fn -> "Message (#{pretty_msg(msg)}) SUCCESS: #{inspect(resp)}" end)
+        {:noreply, Map.delete(queue, id)}
+      end
+
+      @doc """
+      Handles errored messages and invokes error handling
+      """
+      def handle_cast({:error, %{_meta: %{id: id}} = msg, reason}, queue) do
+        Logger.error(fn -> "Message (#{pretty_msg(msg)}) ERROR: #{inspect(reason)}" end)
+        {:noreply, Map.delete(queue, id)}
+      end
+
+      @doc """
+      Handle publishing of messages.  Attaches meta data, increments attempts, broadcasts the message, and finally
+      invokes any route handlers.
+      """
+      def handle_cast({:publish, topic, type, %{_meta: %{id: id}} = msg}, queue) do
+        broadcast(topic, type, msg)
+
+        queue =
+          case route(topic, type, msg) do
+            :noop -> queue
+            _ -> Map.put(queue, id, msg)
+          end
+
+        {:noreply, queue}
+      end
+
+      @doc """
+      Sweeps the queue for expired messages and retries them
+      """
+      def handle_info(:sweep, queue) do
+        expired_ids =
+          queue
+          |> Enum.filter(&expired?(now(), &1))
+          |> Keyword.keys
+
+        {expired, queue} = Map.split(queue, expired_ids)
+
+        Enum.each(expired, &publish/1)
+        Process.send_after(self(), :sweep, 1000)
+
+        {:noreply, queue}
+      end
+
+      def error(msg, error), do: GenServer.cast(__MODULE__, {:error, msg, error})
+
+      def publish(%{_meta: %{topic: topic, type: type}} = msg), do: publish(topic, type, msg)
+      def publish(topic, type, msg) when is_binary(type), do: publish(topic, String.split(type, "."), msg)
+      def publish(topic, type, msg) when is_list(type) do
+        %{_meta: %{attempts: attempts, id: id}} = msg = attach_meta(topic, type, msg)
+
+        if attempts >= max_retries() do
+          error_handling(msg, :max_retries) # This could end up as an infinite loop, let's think about it.
+        else
+          GenServer.cast(__MODULE__, {:publish, topic, type, msg})
+        end
+      end
+
+      @doc false
+      def run_route(consumer, handler, msg) do
+        consumer
+        |> apply(handler, [msg])
+        |> route_result(msg)
+      rescue
+        error -> error_handling(msg, error)
       end
 
       defp config_value(key, default) do
@@ -58,11 +132,6 @@ defmodule Transfusion.Router do
         end
       end
 
-      defp default_meta(topic, type),
-        do: %{attempts: 0, id: gen_id(), published_at: now(), router: self(), topic: topic, type: type}
-
-      defp error(msg, error), do: GenServer.cast(__MODULE__, {:error, msg, error})
-
       defp error_handling(msg, error) do
         case handle_error(error, msg) do
           :retry   -> publish(msg)
@@ -71,24 +140,10 @@ defmodule Transfusion.Router do
         end
       end
 
-      defp expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
+      def expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
         do: (published_at + (attempts * retry_after())) < now
 
-      defp gen_id do
-        64
-        |> :crypto.strong_rand_bytes
-        |> Base.url_encode64
-        |> String.replace(~r{[^a-zA-Z0-9]}, "")
-        |> binary_part(0, 64)
-      end
-
       defp max_retries, do: config_value(:max_retries, 5)
-
-      defp now, do: System.system_time(:second)
-
-      defp pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
-
-      defp remove_msg(queue, msg_id), do: Map.delete(queue, msg_id)
 
       defp retry_after, do: config_value(:retry_after, 300)
 
@@ -134,92 +189,34 @@ defmodule Transfusion.Router do
 
   defmacro topic(topic, consumer, [do: block]), do: message_mapping(topic, consumer, block)
 
+  def attach_meta(topic, type, msg) do
+    meta = Map.get(msg, :_meta, default_meta(topic, type))
+    meta = Map.merge(meta, %{attempts: meta.attempts + 1})
+
+    Map.put(msg, :_meta, meta)
+  end
+
+  def default_meta(topic, type),
+    do: %{attempts: 0, id: gen_id(), published_at: now(), router: self(), topic: topic, type: type}
+
+  def gen_id do
+    64
+    |> :crypto.strong_rand_bytes
+    |> Base.url_encode64
+    |> String.replace(~r{[^a-zA-Z0-9]}, "")
+    |> binary_part(0, 64)
+  end
+
+  def now, do: System.system_time(:second)
+
+  def pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
+
   defp broadcast_catchall(module) do
     unless Module.defines?(module, {:broadcast, 3}) do
       quote do
         defp broadcast(_, _, _), do: :ok # Do nothing
       end
     end
-  end
-
-  @doc false
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
-
-  @doc false
-  def init(state) do
-    Process.send_after(self(), :sweep, 1000)
-
-    {:ok, state}
-  end
-
-  @doc """
-  Acknowledges a message has been processed and can be removed from the queue.
-  """
-  def handle_cast({:ack, %{_meta: %{id: id}} = msg, resp}, queue) do
-    Logger.info(fn -> "Message (#{pretty_msg(msg)}) SUCCESS: #{inspect(resp)}" end)
-    {:noreply, remove_msg(queue, id)}
-  end
-
-  @doc """
-  Handles errored messages and invokes error handling
-  """
-  def handle_cast({:error, %{_meta: %{id: id}} = msg, reason}, queue) do
-    Logger.error(fn -> "Message (#{pretty_msg(msg)}) ERROR: #{inspect(reason)}" end)
-    {:noreply, remove_msg(queue, id)}
-  end
-
-  @doc """
-  Handle publishing of messages.  Attaches meta data, increments attempts, broadcasts the message, and finally
-  invokes any route handlers.
-  """
-  def handle_cast({:publish, topic, type, %{_meta: %{id: id}} = msg}, queue) do
-    broadcast(topic, type, msg)
-
-    queue =
-      case route(topic, type, msg) do
-        :noop -> queue
-        _ -> Map.put(queue, id, msg)
-      end
-
-    {:noreply, queue}
-  end
-
-  @doc """
-  Sweeps the queue for expired messages and retries them
-  """
-  def handle_info(:sweep, queue) do
-    expired_ids =
-      queue
-      |> Enum.filter(&expired?(now(), &1))
-      |> Keyword.keys
-
-    {expired, queue} = Map.split(queue, expired_ids)
-
-    Enum.each(expired, &publish/1)
-    Process.send_after(self(), :sweep, 1000)
-
-    {:noreply, queue}
-  end
-
-  def publish(%{_meta: %{topic: topic, type: type}} = msg), do: publish(topic, type, msg)
-  def publish(topic, type, msg) when is_binary(type), do: publish(topic, String.split(type, "."), msg)
-  def publish(topic, type, msg) when is_list(type) do
-    %{_meta: %{attempts: attempts, id: id}} = msg = attach_meta(topic, type, msg)
-
-    if attempts >= max_retries() do
-      error_handling(msg, :max_retries) # This could end up as an infinite loop, let's think about it.
-    else
-      GenServer.cast(__MODULE__, {:publish, topic, type, msg})
-    end
-  end
-
-  @doc false
-  def run_route(consumer, handler, msg) do
-    consumer
-    |> apply(handler, [msg])
-    |> route_result(msg)
-  rescue
-    error -> error_handling(msg, error)
   end
 
   defp broadcast_function(topic, [to: routers]) when is_list(routers) do
