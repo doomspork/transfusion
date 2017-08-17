@@ -66,13 +66,13 @@ defmodule Transfusion.Router do
       Handle publishing of messages.  Attaches meta data, increments attempts, broadcasts the message, and finally
       invokes any route handlers.
       """
-      def handle_cast({:publish, topic, type, %{_meta: %{id: id}} = msg}, queue) do
-        broadcast(topic, type, msg)
+      def handle_cast({:publish, msg}, queue) do
+        broadcast(msg)
 
         queue =
-          case route(topic, type, msg) do
+          case route(msg) do
+            {:ok, %{_meta: %{id: id}} = msg} -> Map.put(queue, id, msg)
             :noop -> queue
-            _ -> Map.put(queue, id, msg)
           end
 
         {:noreply, queue}
@@ -105,15 +105,15 @@ defmodule Transfusion.Router do
         if attempts >= max_retries() do
           error_handling(msg, :max_retries) # This could end up as an infinite loop, let's think about it.
         else
-          GenServer.cast(__MODULE__, {:publish, topic, type, msg})
+          GenServer.cast(__MODULE__, {:publish, msg})
         end
       end
 
       @doc false
-      def run_route(consumer, handler, msg) do
+      def dispatch_message(consumer, handler, msg) do
         consumer
         |> apply(handler, [msg])
-        |> route_result(msg)
+        |> consumer_result(msg)
       rescue
         error -> error_handling(msg, error)
       end
@@ -132,6 +132,13 @@ defmodule Transfusion.Router do
         end
       end
 
+      defp consumer_result(:error, msg), do: error_handling(msg, "no error returned")
+      defp consumer_result({:error, reason}, msg), do: error_handling(msg, reason)
+      defp consumer_result(:ok, msg), do: consumer_result({:ok, "no result returned"}, msg)
+      defp consumer_result({:ok, resp}, msg), do: GenServer.cast(__MODULE__, {:ack, msg, resp})
+      defp consumer_result(nil, msg), do: consumer_result(:ok, msg)
+      defp consumer_result(result, msg), do: consumer_result({:ok, result}, msg)
+
       defp error_handling(msg, error) do
         case handle_error(error, msg) do
           :retry   -> publish(msg)
@@ -140,28 +147,19 @@ defmodule Transfusion.Router do
         end
       end
 
-      def expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
+      defp expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
         do: (published_at + (attempts * retry_after())) < now
 
       defp max_retries, do: config_value(:max_retries, 5)
 
       defp retry_after, do: config_value(:retry_after, 300)
 
-      defp route_result(:error, msg), do: error_handling(msg, "no error returned")
-      defp route_result({:error, reason}, msg), do: error_handling(msg, reason)
-      defp route_result(:ok, msg), do: route_result({:ok, "no result returned"}, msg)
-      defp route_result({:ok, resp}, msg), do: GenServer.cast(__MODULE__, {:ack, msg, resp})
-      defp route_result(nil, msg), do: route_result(:ok, msg)
-      defp route_result(result, msg), do: route_result({:ok, result}, msg)
-
       @before_compile Transfusion.Router
     end
   end
 
-  defmacro __before_compile__(%{module: module}) do
+  defmacro __before_compile__(_env) do
     quote do
-      unquote(broadcast_catchall(module))
-
       @spec handle_error(any, msg) :: :retry | :noretry
 
       @doc """
@@ -169,9 +167,11 @@ defmodule Transfusion.Router do
       """
       def handle_error(_e, _msg), do: :noretry
 
-      defp route(_topic, _message_type, _msg), do: :noop
+      defp broadcast(_), do: :ok # Do nothing
 
-      defoverridable [handle_error: 2, route: 3]
+      defp route(_msg), do: :noop
+
+      defoverridable [broadcast: 1, handle_error: 2, route: 1]
     end
   end
 
@@ -181,8 +181,8 @@ defmodule Transfusion.Router do
 
   defmacro forward(topic, [to: router]) do
     quote do
-      defp route(unquote(topic), message_type, msg) do
-        unquote(router).publish(unquote(topic), Enum.join(message_type, "."), msg)
+      defp route(%{_meta: %{topic: unquote(topic)}} = msg) do
+        unquote(router).publish(msg)
       end
     end
   end
@@ -211,14 +211,6 @@ defmodule Transfusion.Router do
 
   def pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
 
-  defp broadcast_catchall(module) do
-    unless Module.defines?(module, {:broadcast, 3}) do
-      quote do
-        defp broadcast(_, _, _), do: :ok # Do nothing
-      end
-    end
-  end
-
   defp broadcast_function(topic, [to: routers]) when is_list(routers) do
     topic_match =
       if topic == "*" do
@@ -228,9 +220,9 @@ defmodule Transfusion.Router do
       end
 
     quote do
-      defp broadcast(unquote(topic_match) = topic, message_type, msg) do
+      defp broadcast(%{_meta: %{attempts: 1, topic: unquote(topic_match)}} = msg) do
         Enum.map(unquote(routers), fn (router) ->
-          Task.Supervisor.start_child(Transfusion.TaskSupervisor, router, :publish, [topic, message_type, msg])
+          Task.Supervisor.start_child(Transfusion.TaskSupervisor, router, :publish, [msg])
         end)
       end
     end
@@ -247,9 +239,9 @@ defmodule Transfusion.Router do
   defp message_mapping(topic, consumer, [message_type, [to: handler]]) do
     message_match = message_type_match(message_type)
     quote do
-      defp route(unquote(topic), unquote(message_match), msg) do
+      defp route(%{_meta: %{topic: unquote(topic), type: unquote(message_match)}} = msg) do
         args = [unquote(consumer), unquote(handler), msg]
-        Task.Supervisor.start_child(Transfusion.TaskSupervisor, __MODULE__, :run_route, args)
+        Task.Supervisor.start_child(Transfusion.TaskSupervisor, __MODULE__, :dispatch_message, args)
         {:ok, msg}
       end
     end
