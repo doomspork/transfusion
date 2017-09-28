@@ -32,7 +32,8 @@ defmodule Transfusion.Message do
         errors =
           @fields
           |> Enum.map(&check_type(&1, Map.get(msg, &1)))
-          |> Enum.filter_map(&(elem(&1, 0) == :error), &(elem(&1, 1)))
+          |> Enum.filter(&(elem(&1, 0) == :error))
+          |> Enum.map(&(elem(&1, 1)))
 
         if length(errors) > 0 do
           {:error, errors}
