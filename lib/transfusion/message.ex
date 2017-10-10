@@ -18,7 +18,7 @@ defmodule Transfusion.Message do
         end
       end
 
-      defoverridable [publish: 1]
+      defoverridable publish: 1
 
       unquote(router_method(opts))
     end
@@ -33,7 +33,7 @@ defmodule Transfusion.Message do
           @fields
           |> Enum.map(&check_type(&1, Map.get(msg, &1)))
           |> Enum.filter(&(elem(&1, 0) == :error))
-          |> Enum.map(&(elem(&1, 1)))
+          |> Enum.map(&elem(&1, 1))
 
         if length(errors) > 0 do
           {:error, errors}
@@ -42,11 +42,11 @@ defmodule Transfusion.Message do
         end
       end
 
-      defoverridable [validate: 1]
+      defoverridable validate: 1
 
       def check_type(_, value), do: {:ok, value}
 
-      defoverridable [check_type: 2]
+      defoverridable check_type: 2
 
       def normalize(msg) do
         {message, _} =
@@ -58,10 +58,11 @@ defmodule Transfusion.Message do
         {:ok, message}
       end
 
-      defoverridable [normalize: 1]
+      defoverridable normalize: 1
 
       defp to_atom({key, value}) when is_atom(key), do: {key, value}
       defp to_atom({key, value}) when is_binary(key), do: {String.to_atom(value), value}
+
       defp to_atom({key, value}) do
         key =
           key
@@ -77,7 +78,7 @@ defmodule Transfusion.Message do
     quote do
       def topic, do: unquote(topic)
 
-      defoverridable [topic: 0]
+      defoverridable topic: 0
     end
   end
 
@@ -85,7 +86,7 @@ defmodule Transfusion.Message do
     quote do
       def generate_message_type(_), do: unquote(type)
 
-      defoverridable [generate_message_type: 1]
+      defoverridable generate_message_type: 1
     end
   end
 
@@ -100,7 +101,7 @@ defmodule Transfusion.Message do
     end
   end
 
-  defmacro values([do: block]) do
+  defmacro values(do: block) do
     quote do
       unquote(block)
     end
@@ -108,6 +109,7 @@ defmodule Transfusion.Message do
 
   defp nil_handler(field, opts) do
     required = Keyword.get(opts, :required, false)
+
     if required do
       quote do
         def check_type(unquote(field), nil) do
@@ -146,7 +148,7 @@ defmodule Transfusion.Message do
   defp type_field(field, type) do
     type
     |> to_string
-    |> String.downcase
+    |> String.downcase()
     |> type_check(field)
   end
 

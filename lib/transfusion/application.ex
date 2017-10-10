@@ -7,7 +7,7 @@ defmodule Transfusion.Application do
     import Supervisor.Spec, warn: false
 
     children = [
-      supervisor(Task.Supervisor, [[name: Transfusion.TaskSupervisor]]),
+      supervisor(Task.Supervisor, [[name: Transfusion.TaskSupervisor]])
     ]
 
     opts = [strategy: :one_for_one, name: Transfusion.Supervisor]

@@ -85,7 +85,7 @@ defmodule Transfusion.Router do
         expired_ids =
           queue
           |> Enum.filter(&expired?(now(), &1))
-          |> Keyword.keys
+          |> Keyword.keys()
 
         {expired, queue} = Map.split(queue, expired_ids)
 
@@ -98,12 +98,16 @@ defmodule Transfusion.Router do
       def error(msg, error), do: GenServer.cast(__MODULE__, {:error, msg, error})
 
       def publish(%{_meta: %{topic: topic, type: type}} = msg), do: publish(topic, type, msg)
-      def publish(topic, type, msg) when is_binary(type), do: publish(topic, String.split(type, "."), msg)
+
+      def publish(topic, type, msg) when is_binary(type),
+        do: publish(topic, String.split(type, "."), msg)
+
       def publish(topic, type, msg) when is_list(type) do
         %{_meta: %{attempts: attempts, id: id}} = msg = attach_meta(topic, type, msg)
 
         if attempts >= max_retries() do
-          error_handling(msg, :max_retries) # This could end up as an infinite loop, let's think about it.
+          # This could end up as an infinite loop, let's think about it.
+          error_handling(msg, :max_retries)
         else
           GenServer.cast(__MODULE__, {:publish, msg})
         end
@@ -123,12 +127,16 @@ defmodule Transfusion.Router do
         otp_app = Keyword.get(unquote(opts), :otp_app)
 
         cond do
-          not is_nil(value) -> value
+          not is_nil(value) ->
+            value
+
           is_nil(value) and not is_nil(otp_app) ->
             otp_app
             |> Application.get_env(__MODULE__)
             |> Keyword.get(key, default)
-          true -> default
+
+          true ->
+            default
         end
       end
 
@@ -141,14 +149,14 @@ defmodule Transfusion.Router do
 
       defp error_handling(msg, error) do
         case handle_error(error, msg) do
-          :retry   -> publish(msg)
+          :retry -> publish(msg)
           :noretry -> error(msg, error)
-          result   -> raise "expected `:retry` or `:noretry`, got `#{result}`"
+          result -> raise "expected `:retry` or `:noretry`, got `#{result}`"
         end
       end
 
       defp expired?(now, {_, %{_meta: %{attempts: attempts, published_at: published_at}}}),
-        do: (published_at + (attempts * retry_after())) < now
+        do: published_at + attempts * retry_after() < now
 
       defp max_retries, do: config_value(:max_retries, 5)
 
@@ -167,11 +175,12 @@ defmodule Transfusion.Router do
       """
       def handle_error(_e, _msg), do: :noretry
 
-      defp broadcast(_), do: :ok # Do nothing
+      # Do nothing
+      defp broadcast(_), do: :ok
 
       defp route(_msg), do: :noop
 
-      defoverridable [broadcast: 1, handle_error: 2, route: 1]
+      defoverridable broadcast: 1, handle_error: 2, route: 1
     end
   end
 
@@ -179,7 +188,7 @@ defmodule Transfusion.Router do
     broadcast_function(topic, opts)
   end
 
-  defmacro forward(topic, [to: router]) do
+  defmacro forward(topic, to: router) do
     quote do
       defp route(%{_meta: %{topic: unquote(topic)}} = msg) do
         unquote(router).publish(msg)
@@ -187,7 +196,7 @@ defmodule Transfusion.Router do
     end
   end
 
-  defmacro topic(topic, consumer, [do: block]), do: message_mapping(topic, consumer, block)
+  defmacro topic(topic, consumer, do: block), do: message_mapping(topic, consumer, block)
 
   def attach_meta(topic, type, msg) do
     meta = Map.get(msg, :_meta, default_meta(topic, type))
@@ -197,63 +206,83 @@ defmodule Transfusion.Router do
   end
 
   def default_meta(topic, type),
-    do: %{attempts: 0, id: gen_id(), published_at: now(), router: self(), topic: topic, type: type}
+    do: %{
+      attempts: 0,
+      id: gen_id(),
+      published_at: now(),
+      router: self(),
+      topic: topic,
+      type: type
+    }
 
   def gen_id do
     64
-    |> :crypto.strong_rand_bytes
-    |> Base.url_encode64
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64()
     |> String.replace(~r{[^a-zA-Z0-9]}, "")
     |> binary_part(0, 64)
   end
 
   def now, do: System.system_time(:second)
 
-  def pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}), do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
+  def pretty_msg(%{_meta: %{topic: topic, type: type, id: id}}),
+    do: "#{topic}.#{Enum.join(type, ".")} (id: #{id})"
 
-  defp broadcast_function(topic, [to: routers]) when is_list(routers) do
+  defp broadcast_function(topic, to: routers) when is_list(routers) do
     topic_match =
       if topic == "*" do
-        {:_, [], Elixir} # AST for `_`
+        # AST for `_`
+        {:_, [], Elixir}
       else
         topic
       end
 
     quote do
       defp broadcast(%{_meta: %{attempts: 1, topic: unquote(topic_match)}} = msg) do
-        Enum.map(unquote(routers), fn (router) ->
+        Enum.map(unquote(routers), fn router ->
           Task.Supervisor.start_child(Transfusion.TaskSupervisor, router, :publish, [msg])
         end)
       end
     end
   end
 
-  defp broadcast_function(topic, [to: router]) do
-    broadcast_function(topic, [to: [router]])
+  defp broadcast_function(topic, to: router) do
+    broadcast_function(topic, to: [router])
   end
 
   defp message_mapping(topic, consumer, {:__block__, _, mappings}),
     do: Enum.map(mappings, &message_mapping(topic, consumer, &1))
+
   defp message_mapping(topic, consumer, {:map, _, mapping}),
     do: message_mapping(topic, consumer, mapping)
+
   defp message_mapping(topic, consumer, [message_type, [to: handler]]) do
     message_match = message_type_match(message_type)
+
     quote do
       defp route(%{_meta: %{topic: unquote(topic), type: unquote(message_match)}} = msg) do
         args = [unquote(consumer), unquote(handler), msg]
-        Task.Supervisor.start_child(Transfusion.TaskSupervisor, __MODULE__, :dispatch_message, args)
+
+        Task.Supervisor.start_child(
+          Transfusion.TaskSupervisor,
+          __MODULE__,
+          :dispatch_message,
+          args
+        )
+
         {:ok, msg}
       end
     end
   end
 
   defp message_type_match("*"), do: {:_, [], Elixir}
+
   defp message_type_match(message_type) do
     message_type
     |> String.split(".")
     |> Enum.map(fn
-      ("*") -> {:_, [], Elixir}
-      (match) -> match
-    end)
+         "*" -> {:_, [], Elixir}
+         match -> match
+       end)
   end
 end
